@@ -75,22 +75,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && cp "$(dpkg -L libnss-wrapper | grep 'libnss_wrapper\.so$')" /usr/local/lib/libnss_wrapper.so
 
-# Copy package files and install dependencies (--ignore-scripts blocks malicious postinstall hooks)
+# Copy package files
 COPY package.json package-lock.json ./
-RUN MAKEFLAGS="-j$(nproc)" npm ci --ignore-scripts \
-    && MAKEFLAGS="-j$(nproc)" npm rebuild better-sqlite3 argon2
 
-# Copy source code and build
+# Install full deps (needed for build)
+RUN npm ci
+
+# Copy source
 COPY . .
+
+# Build
 RUN npm run build
 
-# Production dependencies only
-# Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)
-RUN cp -r node_modules/better-sqlite3/build /tmp/better-sqlite3-build \
-    && rm -rf node_modules \
-    && npm ci --omit=dev --ignore-scripts \
-    && cp -r /tmp/better-sqlite3-build node_modules/better-sqlite3/build \
-    && rm -rf node_modules/@types /tmp/better-sqlite3-build
+# Install production deps cleanly
+RUN rm -rf node_modules \
+    && npm ci --omit=dev \
+    && npm rebuild better-sqlite3 argon2 --build-from-source
 
 # Build Go collector
 FROM --platform=$BUILDPLATFORM golang:1.25.9 AS go-builder
