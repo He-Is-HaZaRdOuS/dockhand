@@ -2256,6 +2256,58 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			console.log(`${logPrefix} Read ${Object.keys(stackFiles).length} files from source directory`);
 			console.log(`${logPrefix} Files:`, Object.keys(stackFiles).join(', '));
 
+			const manifestPath = join(workingDir, '.dockhand-manifest.json');
+			let oldManifest: string[] = [];
+			if (existsSync(manifestPath)) {
+				try {
+					oldManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+					console.log(`${logPrefix} Loaded previous deployment manifest with ${oldManifest.length} files`);
+				} catch (err) {
+					console.error(`${logPrefix} Failed to parse old manifest:`, err);
+				}
+			}
+
+			const newManifest = Object.keys(stackFiles);
+			
+			// Smart sync: delete files that are in the old manifest but not in the new source
+			if (oldManifest.length > 0) {
+				const toDelete = oldManifest.filter(f => !newManifest.includes(f));
+				if (toDelete.length > 0) {
+					console.log(`${logPrefix} Smart sync: removing ${toDelete.length} files no longer present in source...`);
+					for (const relPath of toDelete) {
+						const absPath = join(workingDir, relPath);
+						if (existsSync(absPath)) {
+							try {
+								unlinkSync(absPath);
+								console.log(`${logPrefix} Deleted stale file: ${relPath}`);
+							} catch (err) {
+								console.error(`${logPrefix} Failed to delete stale file ${relPath}:`, err);
+							}
+						}
+					}
+					
+					// Attempt to clean up empty directories left behind
+					// Sort descending by length so we delete deepest directories first
+					const dirsToClean = [...new Set(toDelete.map(f => dirname(f)))].filter(d => d !== '.' && d !== '/');
+					dirsToClean.sort((a, b) => b.length - a.length);
+					
+					for (const relDir of dirsToClean) {
+						const absDir = join(workingDir, relDir);
+						if (existsSync(absDir)) {
+							try {
+								const entries = readdirSync(absDir);
+								if (entries.length === 0) {
+									rmSync(absDir, { recursive: true, force: true });
+									console.log(`${logPrefix} Deleted empty directory: ${relDir}`);
+								}
+							} catch (err) {
+								// Ignore errors when checking/removing directories
+							}
+						}
+					}
+				}
+			}
+
 			// Copy git source files to stack directory (overlay, not replace).
 			// Do NOT rmSync first — relative volume mounts (e.g., ./data) live here
 			// and would be destroyed, causing data loss (#831).
@@ -2267,6 +2319,14 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 				filter: (src) => !src.includes('/.git/') && !src.endsWith('/.git')
 			});
 			console.log(`${logPrefix} Copied ${sourceDir} -> ${workingDir}`);
+			
+			// Save new manifest
+			try {
+				writeFileSync(manifestPath, JSON.stringify(newManifest, null, 2), 'utf8');
+				console.log(`${logPrefix} Saved new deployment manifest with ${newManifest.length} files`);
+			} catch (err) {
+				console.error(`${logPrefix} Failed to write new manifest:`, err);
+			}
 		} else {
 			// Internal stack: check if a custom path exists in DB (adopted/imported stacks)
 			const source = await getStackSource(name, envId);
